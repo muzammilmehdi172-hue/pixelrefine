@@ -426,7 +426,6 @@ def terms():
 
 # === STARTUP ===
 if __name__ == "__main__":
-    init_db()
-    port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 PixelRefine AI running on http://localhost:{port}")
+    port = int(os.environ.get("PORT", 10000))  # ← MUST be 10000 for Render
+    print(f"🚀 Starting PixelRefine AI on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
