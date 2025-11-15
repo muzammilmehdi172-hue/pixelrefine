@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign Up - PixelRefine AI</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <style>
+    /* Same CSS as signin.html (omitted for brevity — keep your original) */
+    :root { --primary: #8b5cf6; --dark: #1e293b; --darker: #0f172a; --light: #f8fafc; --light-gray: #e2e8f0; --border: #334155; --success: #10b981; --error: #ef4444; }
+    body { background: linear-gradient(135deg, var(--darker) 0%, var(--dark) 100%); font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; color: var(--light); }
+    .container { width: 100%; max-width: 450px; padding: 0 1.5rem; }
+    .auth-container { background: rgba(30, 41, 59, 0.8); padding: 2.5rem; border-radius: 1rem; width: 100%; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1); }
+    .logo { display: flex; align-items: center; gap: 0.75rem; justify-content: center; margin-bottom: 2rem; text-decoration: none; }
+    .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--primary), #3b82f6); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .logo-text { font-size: 1.5rem; font-weight: 700; background: linear-gradient(135deg, var(--primary), #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .form-group { margin-bottom: 1.25rem; }
+    .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; }
+    .form-control { width: 100%; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--border); background: #1e293b; color: white; font-size: 1rem; transition: all 0.3s ease; }
+    .form-control:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.3); }
+    .btn { width: 100%; padding: 0.75rem; border: none; border-radius: 0.5rem; background: linear-gradient(135deg, var(--primary), #3b82f6); color: white; font-weight: 600; cursor: pointer; margin-top: 1rem; font-size: 1rem; transition: all 0.3s ease; }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .auth-link { display: block; text-align: center; margin-top: 1.5rem; color: var(--primary); text-decoration: none; }
+    .auth-link:hover { text-decoration: underline; }
+    .alert { padding: 0.75rem; margin-bottom: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--error); background: rgba(239, 68, 68, 0.1); color: var(--light); }
+    .alert-success { border-left-color: var(--success); background: rgba(16, 185, 129, 0.1); }
+    .back-home { text-align: center; margin-top: 2rem; }
+    .back-home a { color: var(--light-gray); text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem; transition: color 0.3s ease; }
+    .back-home a:hover { color: var(--primary); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="index.html" class="logo">
+      <div class="logo-icon">
+        <i class="fas fa-bolt"></i>
+      </div>
+      <span class="logo-text">PixelRefine AI</span>
+    </a>
+
+    <div class="auth-container">
+      <h2 style="text-align: center;">Create Your Account</h2>
+      <p style="text-align: center; margin-bottom: 1.5rem; color: var(--light-gray);">
+        Get started with 10 free image enhancements
+      </p>
+      
+      <form id="signupForm">
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" class="form-control" placeholder="Enter your email" required>
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" class="form-control" placeholder="Create a password" required minlength="6">
+          <p style="font-size: 0.8rem; color: var(--light-gray); margin-top: 0.5rem;">
+            Must be at least 6 characters
+          </p>
+        </div>
+        
+        <button type="submit" class="btn" id="submitBtn">
+          <i class="fas fa-user-plus"></i> Sign Up
+        </button>
+      </form>
+      
+      <a href="signin.html" class="auth-link">
+        Already have an account? Sign in
+      </a>
+    </div>
+
+    <div class="back-home">
+      <a href="index.html">
+        <i class="fas fa-arrow-left"></i> Back to Home
+      </a>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDMWaj1ZuGGYj3l1-KOHCBvMbRk3cX2isg",
+      authDomain: "pixelrefine-ai.firebaseapp.com",
+      projectId: "pixelrefine-ai",
+      storageBucket: "pixelrefine-ai.firebasestorage.app",
+      messagingSenderId: "227630158334",
+      appId: "1:227630158334:web:5e5bd6c6e2ec31aaa770af"
+    };
+    firebase.initializeApp(firebaseConfig);
+
+    document.getElementById('signupForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const submitBtn = document.getElementById('submitBtn');
+
+      if (!email || !password) {
+        showAlert('Please fill in all fields', 'error');
+        return;
+      }
+      if (password.length < 6) {
+        showAlert('Password must be at least 6 characters', 'error');
+        return;
+      }
+
+      submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account...';
+      submitBtn.disabled = true;
+
+      try {
+        await firebase.auth().createUserWithEmailAndPassword(email, password);
+        showAlert('Account created! Redirecting...', 'success');
+        setTimeout(() => {
+          window.location.href = 'index.html';
+        }, 1500);
+      } catch (error) {
+        console.error('Signup error:', error);
+        showAlert(error.message || 'Signup failed', 'error');
+      } finally {
+        submitBtn.innerHTML = '<i class="fas fa-user-plus"></i> Sign Up';
+        submitBtn.disabled = false;
+      }
+    });
+
+    function showAlert(message, type) {
+      const existingAlert = document.querySelector('.alert');
+      if (existingAlert) existingAlert.remove();
+
+      const alert = document.createElement('div');
+      alert.className = `alert ${type === 'success' ? 'alert-success' : ''}`;
+      alert.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>
+          <span>${message}</span>
+        </div>
+      `;
+      document.querySelector('.auth-container').insertBefore(alert, document.querySelector('#signupForm'));
+      if (type === 'success') setTimeout(() => alert.remove(), 3000);
+    }
+  </script>
+</body>
+</html>
