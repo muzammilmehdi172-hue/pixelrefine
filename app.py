@@ -12,7 +12,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image
 import secrets
 from datetime import datetime, timedelta
-import json
+import logging
+
+# Silence Flask dev server warning in logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # === INIT ===
 app = Flask(__name__)
@@ -22,8 +25,6 @@ app.secret_key = 'pixelrefine-secret-key-2025-change-in-production'
 os.makedirs('uploads', exist_ok=True)
 os.makedirs('results', exist_ok=True)
 os.makedirs('models', exist_ok=True)
-os.makedirs('templates', exist_ok=True)
-os.makedirs('static', exist_ok=True)
 
 # === DATABASE ===
 def get_db():
@@ -86,17 +87,15 @@ def init_db():
             )
         ''')
         db.commit()
-    print("✅ Database schema verified.")
+    print("✅ Database initialized.")
 
 # === SESSION & AUTH ===
 def create_session_token(user_id):
     session_token = secrets.token_urlsafe(32)
     expires_at = datetime.now() + timedelta(days=30)
     with closing(get_db()) as db:
-        db.execute(
-            'INSERT INTO user_sessions (user_id, session_token, expires_at) VALUES (?, ?, ?)',
-            (user_id, session_token, expires_at)
-        )
+        db.execute('INSERT INTO user_sessions (user_id, session_token, expires_at) VALUES (?, ?, ?)',
+                   (user_id, session_token, expires_at))
         db.commit()
     return session_token
 
@@ -121,14 +120,57 @@ def get_current_user():
                 return dict(user) if user else None
     return None
 
-# === PASSWORD RESET ===
-def send_reset_email(user_email, reset_token):
-    # For development: log reset link
-    reset_link = f"http://localhost:5000/reset-password?token={reset_token}"
-    print(f"📧 Password reset link for {user_email}: {reset_link}")
-    return True
+# === MODEL SETUP (LAZY LOAD) ===
+GFPGAN_URL = "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth"
+ESRGAN_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
+GFPGAN_PATH = "models/GFPGANv1.4.pth"
+ESRGAN_PATH = "models/RealESRGAN_x2plus.pth"
+
+def download_if_missing(url, path):
+    if not os.path.exists(path):
+        print(f"📥 Downloading {os.path.basename(path)}...")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            urllib.request.urlretrieve(url, path)
+            print("✅ Download complete.")
+        except Exception as e:
+            print(f"❌ Download failed: {e}")
+
+gfpgan_restorer = None
+realesrgan_enhancer = None
+
+def load_models():
+    global gfpgan_restorer, realesrgan_enhancer
+    if gfpgan_restorer is not None and realesrgan_enhancer is not None:
+        return
+
+    print("⏳ Loading AI models (first enhancement may take 30-60s)...")
+    try:
+        download_if_missing(GFPGAN_URL, GFPGAN_PATH)
+        download_if_missing(ESRGAN_URL, ESRGAN_PATH)
+
+        from gfpgan import GFPGANer
+        from realesrgan import RealESRGANer
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+
+        gfpgan_restorer = GFPGANer(model_path=GFPGAN_PATH, upscale=2, bg_upsampler=None)
+        realesrgan_enhancer = RealESRGANer(
+            scale=2,
+            model_path=ESRGAN_PATH,
+            model=RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2),
+            tile=256,
+            half=False
+        )
+        print("✅ AI models loaded.")
+    except Exception as e:
+        print(f"⚠️ Model load failed: {e}")
 
 # === AUTH ROUTES ===
+@app.route('/')
+@app.route('/<path>')
+def home(path=None):
+    return render_template('index.html')
+
 @app.route('/signin')
 def signin_page():
     return render_template('signin.html')
@@ -151,28 +193,22 @@ def login_api():
     email = request.form.get('email', '').lower().strip()
     password = request.form.get('password', '')
     if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
+        return jsonify({"error": "Email and password required"}), 400
 
     with closing(get_db()) as db:
         user = db.execute('SELECT id, email, password_hash FROM users WHERE email = ?', (email,)).fetchone()
         if user and check_password_hash(user['password_hash'], password):
             session_token = create_session_token(user['id'])
             session['session_token'] = session_token
-            return jsonify({
-                "success": True,
-                "message": "Login successful!",
-                "user": {"id": user['id'], "email": user['email']}
-            })
-        return jsonify({"error": "Invalid email or password"}), 401
+            return jsonify({"success": True, "user": {"id": user['id'], "email": user['email']}})
+        return jsonify({"error": "Invalid credentials"}), 401
 
 @app.route('/api/signup', methods=['POST'])
 def signup_api():
     email = request.form.get('email', '').lower().strip()
     password = request.form.get('password', '')
-    if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
-    if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters"}), 400
+    if not email or not password or len(password) < 6:
+        return jsonify({"error": "Valid email and 6+ char password required"}), 400
 
     try:
         with closing(get_db()) as db:
@@ -182,72 +218,9 @@ def signup_api():
             user = db.execute('SELECT id, email FROM users WHERE email = ?', (email,)).fetchone()
             session_token = create_session_token(user['id'])
             session['session_token'] = session_token
-            return jsonify({
-                "success": True,
-                "message": "Account created successfully!",
-                "user": {"id": user['id'], "email": user['email']}
-            })
+            return jsonify({"success": True, "user": {"id": user['id'], "email": user['email']}})
     except sqlite3.IntegrityError:
-        return jsonify({"error": "An account with this email already exists"}), 400
-    except Exception as e:
-        print(f"Signup error: {e}")
-        return jsonify({"error": "An error occurred during signup"}), 500
-
-@app.route('/api/forgot-password', methods=['POST'])
-def forgot_password_api():
-    email = request.json.get('email', '').lower().strip()
-    if not email:
-        return jsonify({"error": "Email is required"}), 400
-
-    try:
-        with closing(get_db()) as db:
-            user = db.execute('SELECT id FROM users WHERE email = ?', (email,)).fetchone()
-            if user:
-                reset_token = secrets.token_urlsafe(32)
-                expires_at = datetime.now() + timedelta(hours=1)
-                db.execute('INSERT INTO password_resets (user_id, reset_token, expires_at) VALUES (?, ?, ?)',
-                           (user['id'], reset_token, expires_at))
-                db.commit()
-                if send_reset_email(email, reset_token):
-                    return jsonify({"success": True, "message": "Reset instructions sent if account exists."})
-            return jsonify({"success": True, "message": "Reset instructions sent if account exists."})
-    except Exception as e:
-        print(f"Password reset error: {e}")
-        return jsonify({"error": "An error occurred"}), 500
-
-@app.route('/api/reset-password', methods=['POST'])
-def reset_password_api():
-    token = request.json.get('token')
-    new_password = request.json.get('password')
-    if not token or not new_password or len(new_password) < 6:
-        return jsonify({"error": "Valid token and 6+ char password required"}), 400
-
-    try:
-        with closing(get_db()) as db:
-            reset = db.execute('''
-                SELECT user_id FROM password_resets 
-                WHERE reset_token = ? AND expires_at > ? AND used = 0
-            ''', (token, datetime.now())).fetchone()
-            if reset:
-                db.execute('UPDATE users SET password_hash = ? WHERE id = ?',
-                           (generate_password_hash(new_password), reset['user_id']))
-                db.execute('UPDATE password_resets SET used = 1 WHERE reset_token = ?', (token,))
-                db.commit()
-                return jsonify({"success": True, "message": "Password reset successful!"})
-            return jsonify({"error": "Invalid or expired token"}), 400
-    except Exception as e:
-        print(f"Reset password error: {e}")
-        return jsonify({"error": "Reset failed"}), 500
-
-@app.route('/api/logout', methods=['POST'])
-def logout_api():
-    session_token = session.get('session_token')
-    if session_token:
-        with closing(get_db()) as db:
-            db.execute('DELETE FROM user_sessions WHERE session_token = ?', (session_token,))
-            db.commit()
-    session.clear()
-    return jsonify({"success": True, "message": "Logged out successfully"})
+        return jsonify({"error": "Email already registered"}), 400
 
 @app.route('/api/user')
 def user_api():
@@ -265,18 +238,28 @@ def user_api():
         })
     return jsonify({"is_authenticated": False})
 
-# === DONATION (Placeholder – connect Ko-fi webhook later) ===
+@app.route('/api/logout', methods=['POST'])
+def logout_api():
+    session_token = session.get('session_token')
+    if session_token:
+        with closing(get_db()) as db:
+            db.execute('DELETE FROM user_sessions WHERE session_token = ?', (session_token,))
+            db.commit()
+    session.clear()
+    return jsonify({"success": True})
+
+# === DONATION (simulate — connect Ko-fi webhook later) ===
 @app.route('/api/donate', methods=['POST'])
 def donate_api():
     user = get_current_user()
     if not user:
-        return jsonify({"error": "Please log in to donate"}), 401
+        return jsonify({"error": "Login required"}), 401
 
     data = request.get_json()
-    amount = data.get('amount', 0)
+    amount = float(data.get('amount', 0))
     tier = data.get('tier', 'custom')
     if amount <= 0:
-        return jsonify({"error": "Invalid donation amount"}), 400
+        return jsonify({"error": "Invalid amount"}), 400
 
     try:
         with closing(get_db()) as db:
@@ -287,66 +270,64 @@ def donate_api():
             if amount >= 15:
                 db.execute('UPDATE users SET is_premium = 1 WHERE id = ?', (user['id'],))
             db.commit()
-            return jsonify({
-                "success": True,
-                "message": f"Thank you for your ${amount} donation!",
-                "is_premium": amount >= 15
-            })
+            return jsonify({"success": True, "is_premium": amount >= 15})
     except Exception as e:
-        print(f"Donation error: {e}")
         return jsonify({"error": "Donation failed"}), 500
 
-# === AI MODEL SETUP ===
-GFPGAN_URL = "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth"
-ESRGAN_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth"
-GFPGAN_PATH = "models/GFPGANv1.4.pth"
-ESRGAN_PATH = "models/RealESRGAN_x2plus.pth"
+# === PASSWORD RESET (log link to console) ===
+@app.route('/api/forgot-password', methods=['POST'])
+def forgot_password_api():
+    email = request.json.get('email', '').lower().strip()
+    if not email:
+        return jsonify({"error": "Email required"}), 400
 
-def download_if_missing(url, path):
-    if not os.path.exists(path):
-        print(f"📥 Downloading {os.path.basename(path)}...")
-        try:
-            urllib.request.urlretrieve(url, path)
-            print("✅ Download complete.")
-        except Exception as e:
-            print(f"❌ Download failed: {e}")
+    try:
+        with closing(get_db()) as db:
+            user = db.execute('SELECT id FROM users WHERE email = ?', (email,)).fetchone()
+            if user:
+                reset_token = secrets.token_urlsafe(32)
+                expires_at = datetime.now() + timedelta(hours=1)
+                db.execute('INSERT INTO password_resets (user_id, reset_token, expires_at) VALUES (?, ?, ?)',
+                           (user['id'], reset_token, expires_at))
+                db.commit()
+                reset_link = f"{request.url_root}reset-password?token={reset_token}"
+                print(f"📧 Password reset link for {email}: {reset_link}")
+            return jsonify({"success": True, "message": "If account exists, reset instructions were sent."})
+    except Exception as e:
+        return jsonify({"error": "Request failed"}), 500
 
-try:
-    download_if_missing(GFPGAN_URL, GFPGAN_PATH)
-    download_if_missing(ESRGAN_URL, ESRGAN_PATH)
-except Exception as e:
-    print(f"⚠️ Model download failed: {e}")
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password_api():
+    token = request.json.get('token')
+    password = request.json.get('password')
+    if not token or not password or len(password) < 6:
+        return jsonify({"error": "Valid token and 6+ char password required"}), 400
 
-# === LOAD AI MODELS ===
-gfpgan_restorer = None
-realesrgan_enhancer = None
-
-try:
-    from gfpgan import GFPGANer
-    from realesrgan import RealESRGANer
-    from basicsr.archs.rrdbnet_arch import RRDBNet
-
-    gfpgan_restorer = GFPGANer(model_path=GFPGAN_PATH, upscale=2, bg_upsampler=None)
-    realesrgan_enhancer = RealESRGANer(
-        scale=2,
-        model_path=ESRGAN_PATH,
-        model=RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2),
-        tile=256,
-        half=False
-    )
-    print("✅ AI Models loaded successfully!")
-except Exception as e:
-    print(f"⚠️ Failed to load AI models: {e}")
+    try:
+        with closing(get_db()) as db:
+            reset = db.execute('''
+                SELECT user_id FROM password_resets 
+                WHERE reset_token = ? AND expires_at > ? AND used = 0
+            ''', (token, datetime.now())).fetchone()
+            if reset:
+                db.execute('UPDATE users SET password_hash = ? WHERE id = ?',
+                           (generate_password_hash(password), reset['user_id']))
+                db.execute('UPDATE password_resets SET used = 1 WHERE reset_token = ?', (token,))
+                db.commit()
+                return jsonify({"success": True})
+            return jsonify({"error": "Invalid or expired token"}), 400
+    except Exception as e:
+        return jsonify({"error": "Reset failed"}), 500
 
 # === ENHANCEMENT LOGIC ===
 def can_user_enhance(user):
     if not user:
-        return False, "Please log in to enhance images"
+        return False, "Please log in"
     if user.get('is_premium'):
         return True, "Premium user"
     if user.get('free_enhancements_used', 0) < 10:
         return True, "Free tier available"
-    return False, "Free limit reached. Donate for premium access."
+    return False, "Free limit reached. Donate for premium."
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -356,7 +337,7 @@ def upload():
         return jsonify({"success": False, "error": msg}), 403
 
     if 'file' not in request.files:
-        return jsonify({"success": False, "error": "No file uploaded"}), 400
+        return jsonify({"success": False, "error": "No file"}), 400
     file = request.files['file']
     if file.filename == '':
         return jsonify({"success": False, "error": "No file selected"}), 400
@@ -366,25 +347,33 @@ def upload():
     output_path = f"results/enhanced_{filename}"
 
     try:
+        # Resize if too large
         img_pil = Image.open(file.stream)
         if max(img_pil.size) > 1200:
             img_pil.thumbnail((1200, 1200), Image.LANCZOS)
         img_pil.save(input_path)
 
+        # ✅ LAZY LOAD MODELS ON FIRST UPLOAD
+        load_models()
+
+        # Enhance with AI if models loaded
         if gfpgan_restorer and realesrgan_enhancer:
             img = cv2.imread(input_path)
             _, _, restored = gfpgan_restorer.enhance(img, has_aligned=False, paste_back=True)
             upscaled, _ = realesrgan_enhancer.enhance(restored)
             cv2.imwrite(output_path, upscaled)
         else:
+            # Fallback if models fail
             img_pil.save(output_path)
 
+        # Update usage
         if user and not user.get('is_premium'):
             with closing(get_db()) as db:
                 db.execute('UPDATE users SET free_enhancements_used = free_enhancements_used + 1 WHERE id = ?',
                            (user['id'],))
                 db.commit()
 
+        # Record image
         if user:
             with closing(get_db()) as db:
                 db.execute('INSERT INTO user_images (user_id, original_filename, enhanced_filename) VALUES (?, ?, ?)',
@@ -394,12 +383,11 @@ def upload():
         return jsonify({
             "success": True,
             "before_url": f"/uploads/{filename}",
-            "after_url": f"/results/enhanced_{filename}",
-            "message": "Image enhanced successfully!"
+            "after_url": f"/results/enhanced_{filename}"
         })
 
     except Exception as e:
-        return jsonify({"success": False, "error": f"Enhancement failed: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # === STATIC FILES ===
 @app.route('/uploads/<path:filename>')
@@ -410,22 +398,9 @@ def uploads(filename):
 def results(filename):
     return send_from_directory('results', filename)
 
-# === PAGE ROUTES (SPA) ===
-@app.route('/')
-@app.route('/<path>')
-def home(path=None):
-    return render_template('index.html')
-
-@app.route('/privacy')
-def privacy():
-    return render_template('privacy.html')
-
-@app.route('/terms')
-def terms():
-    return render_template('terms.html')
-
 # === STARTUP ===
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # ← MUST be 10000 for Render
-    print(f"🚀 Starting PixelRefine AI on http://0.0.0.0:{port}")
+    init_db()
+    port = int(os.environ.get("PORT", 10000))  # Render expects 10000
+    print(f"🚀 PixelRefine AI running on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
